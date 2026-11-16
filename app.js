@@ -185,3 +185,112 @@ $("clearButton").onclick=()=>{
 };
 $("closeDialog").onclick=()=>$("productDialog").close();
 start();
+let codeReader = null;
+let scannerControls = null;
+
+function stopScanner() {
+  if (scannerControls) {
+    scannerControls.stop();
+    scannerControls = null;
+  }
+  const video = $("scannerVideo");
+  if (video && video.srcObject) {
+    video.srcObject.getTracks().forEach(track => track.stop());
+    video.srcObject = null;
+  }
+  if ($("scannerDialog").open) {
+    $("scannerDialog").close();
+  }
+}
+
+function handleScannedCode(rawCode) {
+  const cleanCode = String(rawCode || "").trim();
+  if (!cleanCode) return;
+
+  stopScanner();
+
+  // Poner el código leído en el buscador y filtrar
+  $("searchInput").value = cleanCode;
+  state.query = cleanCode;
+  state.family = null;
+  state.capacity = null;
+  $("clearButton").classList.remove("hidden");
+  renderFilters();
+  renderCapacityFilters();
+  renderProducts();
+
+  // Si coincide exactamente con un producto por EAN o referencia, abrir su ficha
+  const digits = eanDigits(cleanCode);
+  const exactMatch = state.products.find(p => 
+    (digits && eanDigits(p.ean) === digits) || 
+    normalize(p.id) === normalize(cleanCode)
+  );
+  if (exactMatch) {
+    showProduct(exactMatch);
+  }
+}
+
+async function startScanner() {
+  const dialog = $("scannerDialog");
+  const status = $("scannerStatus");
+  const video = $("scannerVideo");
+
+  status.textContent = "Iniciando cámara...";
+  dialog.showModal();
+
+  try {
+    // 1. Intentar usar la librería ZXing incluida en el HTML
+    if (window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) {
+      if (!codeReader) {
+        codeReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+      }
+      status.textContent = "Coloca el EAN dentro del recuadro.";
+      scannerControls = await codeReader.decodeFromConstraints(
+        { video: { facingMode: "environment" } },
+        video,
+        (result, err) => {
+          if (result) {
+            handleScannedCode(result.getText());
+          }
+        }
+      );
+      return;
+    }
+
+    // 2. Alternativa: BarcodeDetector nativo (Chrome / Android / Edge)
+    if ("BarcodeDetector" in window) {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" }
+      });
+      video.srcObject = stream;
+      await video.play();
+      status.textContent = "Coloca el EAN dentro del recuadro.";
+
+      const detector = new BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "code_128"] });
+      const scanLoop = async () => {
+        if (!dialog.open) return;
+        try {
+          const barcodes = await detector.detect(video);
+          if (barcodes.length > 0) {
+            handleScannedCode(barcodes[0].rawValue);
+            return;
+          }
+        } catch (e) {}
+        requestAnimationFrame(scanLoop);
+      };
+      requestAnimationFrame(scanLoop);
+      return;
+    }
+
+    status.textContent = "No se encontró el lector de códigos (revisa vendor/zxing-browser.min.js).";
+  } catch (error) {
+    console.error("Error de cámara:", error);
+    status.textContent = "No se pudo acceder a la cámara. Comprueba los permisos y que estés usando HTTPS.";
+  }
+}
+
+// Eventos de botones del escáner
+$("scanButton").onclick = startScanner;
+$("closeScanner").onclick = stopScanner;
+$("scannerDialog").addEventListener("close", stopScanner);
+
