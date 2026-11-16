@@ -1,16 +1,57 @@
-const state={products:[],query:"",family:null,subfamily:null,capacity:null};
+const state={
+  products:[],
+  query:"",
+  family:null,
+  subfamily:null,
+  capacity:null,
+  watchConn:null,
+  watchModel:null,
+  watchSize:null
+};
 const $=id=>document.getElementById(id);
 const CAPACITY_FAMILIES=["iphone","macbook","imac","ipad","mac mini","mac studio"];
 const supportsCapacity=family=>Boolean(family)&&CAPACITY_FAMILIES.some(f=>normalize(family).includes(f));
+const isWatchFamily=family=>Boolean(family)&&normalize(family).includes("watch");
 
 const normalize=value=>String(value??"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("es-ES").replace(/[^a-z0-9]+/g," ").trim();
+
+const extractWatchConn=p=>{
+  const text=normalize(`${p.name} ${p.details}`);
+  if(text.includes("ultra") || text.includes("cellular")) return "GPS + Cellular";
+  return "GPS (Wi-Fi)";
+};
+
+const extractWatchModel=p=>{
+  const text=normalize(`${p.name} ${p.details}`);
+  if(text.includes("ultra")) return "Ultra";
+  if(/\bse\b/.test(text)) return "SE";
+  if(text.includes("series")) return "Series";
+  return null;
+};
+
+const WATCH_SIZES_BY_MODEL={
+  "SE":["40","44"],
+  "Series":["42","46"],
+  "Ultra":["49"]
+};
+
+const extractWatchSize=p=>{
+  const text=`${p.name} ${p.details}`;
+  const match=text.match(/\b(40|41|42|44|45|46|49)\b/i);
+  return match?match[1]:null;
+};
+
+const resetWatchFilters=()=>{
+  state.watchConn=null;
+  state.watchModel=null;
+  state.watchSize=null;
+};
 
 const imageFor=p=>{
   if(p.image) return p.image;
   const family=normalize(p.family);
   const name=normalize(p.name);
 
-  // 1. iPhone
   if(family==="iphone"){
     if(name.includes("18 pro")) return "images/iphone-18-pro-real.png";
     if(name.includes("17 pro")) return "images/iphone-17-pro-real.jpg";
@@ -19,28 +60,18 @@ const imageFor=p=>{
     if(name.includes("17e")) return "images/iphone-17e-real.png";
     return "images/iphone-17-real.png";
   }
-
-  // 2. Apple Watch
-  if(family.includes("watch")){
-    return "images/watch-real.jpg";
-  }
-
-  // 3. iPad
+  if(family.includes("watch")) return "images/watch-real.jpg";
   if(family.includes("ipad")){
     if(family.includes("pro") || name.includes("pro")) return "images/ipad-pro-real.png";
     if(family.includes("air") || name.includes("air")) return "images/ipad-air-real.png";
     if(family.includes("mini") || name.includes("mini")) return "images/ipad-mini-real.png";
     return "images/ipad-a16-real.png";
   }
-
-  // 4. MacBook
   if(family.includes("macbook")){
     if(family.includes("neo") || name.includes("neo")) return "images/macbook-neo-real.jpg";
     if(family.includes("air") || name.includes("air")) return "images/macbook-air-real.jpg";
     return "images/macbook-pro-real.jpg";
   }
-
-  // 5. Mac de escritorio y Pantallas
   if(family.includes("imac")) return "images/imac-real.jpg";
   if(family.includes("mac studio")) return "images/mac-studio-real.jpg";
   if(family.includes("mac mini")) return "images/mac-mini-real.jpg";
@@ -83,13 +114,15 @@ const extractCapacity=p=>{
   });
   return storage.length?storage.pop():null;
 };
-
 function visibleProducts(){
   const tokens=queryTokens(state.query);
   return state.products.filter(p=>{
     const matchesFamily=!state.family||p.family===state.family;
     const matchesCapacity=!state.capacity||extractCapacity(p)===state.capacity;
-    return matchesFamily&&matchesCapacity&&tokens.every(t=>searchable(p).includes(t));
+    const matchesWatchConn=!state.watchConn||extractWatchConn(p)===state.watchConn;
+    const matchesWatchModel=!state.watchModel||extractWatchModel(p)===state.watchModel;
+    const matchesWatchSize=!state.watchSize||extractWatchSize(p)===state.watchSize;
+    return matchesFamily&&matchesCapacity&&matchesWatchConn&&matchesWatchModel&&matchesWatchSize&&tokens.every(t=>searchable(p).includes(t));
   });
 }
 
@@ -99,8 +132,10 @@ function renderFilters(){
   $("filters").querySelectorAll("button").forEach(b=>b.onclick=()=>{
     state.family=state.family===b.dataset.family?null:b.dataset.family;
     if(!supportsCapacity(state.family))state.capacity=null;
+    if(!isWatchFamily(state.family))resetWatchFilters();
     renderFilters();
     renderCapacityFilters();
+    renderWatchFilters();
     renderProducts();
   });
 }
@@ -125,6 +160,74 @@ function renderCapacityFilters(){
     state.capacity=state.capacity===b.dataset.cap?null:b.dataset.cap;
     renderCapacityFilters();renderProducts();
   });
+}
+
+function renderWatchFilters(){
+  const modelEl=$("watchModelFilters");
+  const connEl=$("watchConnFilters");
+  const sizeEl=$("watchSizeFilters");
+  if(!modelEl||!connEl||!sizeEl)return;
+
+  const show=isWatchFamily(state.family);
+  modelEl.classList.toggle("hidden",!show);
+
+  if(!show){
+    modelEl.innerHTML="";
+    connEl.classList.add("hidden");
+    connEl.innerHTML="";
+    sizeEl.classList.add("hidden");
+    sizeEl.innerHTML="";
+    return;
+  }
+
+  const models=["SE","Series","Ultra"];
+  modelEl.innerHTML=models.map(m=>`<button class="filter ${m===state.watchModel?"active":""}" data-model="${m}">${m}</button>`).join("");
+  modelEl.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    state.watchModel=state.watchModel===b.dataset.model?null:b.dataset.model;
+    state.watchSize=null;
+
+    if(state.watchModel==="Ultra"){
+      state.watchConn="GPS + Cellular";
+    }else if(!state.watchModel){
+      state.watchConn=null;
+    }
+
+    renderWatchFilters();
+    renderProducts();
+  });
+
+  const showSubfilters=Boolean(state.watchModel);
+  connEl.classList.toggle("hidden",!showSubfilters);
+
+  if(!showSubfilters){
+    connEl.innerHTML="";
+  }else{
+    const conns=state.watchModel==="Ultra"
+      ? ["GPS + Cellular"]
+      : ["GPS (Wi-Fi)","GPS + Cellular"];
+
+    connEl.innerHTML=conns.map(c=>`<button class="filter ${c===state.watchConn?"active":""}" data-conn="${c}">${c}</button>`).join("");
+    connEl.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+      if(state.watchModel==="Ultra")return;
+      state.watchConn=state.watchConn===b.dataset.conn?null:b.dataset.conn;
+      renderWatchFilters();
+      renderProducts();
+    });
+  }
+
+  const allowedSizes=state.watchModel?(WATCH_SIZES_BY_MODEL[state.watchModel]||[]):[];
+  sizeEl.classList.toggle("hidden",allowedSizes.length===0);
+
+  if(allowedSizes.length===0){
+    sizeEl.innerHTML="";
+  }else{
+    sizeEl.innerHTML=allowedSizes.map(s=>`<button class="filter ${s===state.watchSize?"active":""}" data-size="${s}">${s}</button>`).join("");
+    sizeEl.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+      state.watchSize=state.watchSize===b.dataset.size?null:b.dataset.size;
+      renderWatchFilters();
+      renderProducts();
+    });
+  }
 }
 
 function renderProducts(){
@@ -157,7 +260,7 @@ function showProduct(p){
   $("barcodeUnavailable").classList.toggle("hidden",Boolean(barcode));
   $("barcodeGraphic").innerHTML=barcode;
   $("barcodeNumber").textContent=eanDigits(p.ean);
-  $("detailSpecs").innerHTML=[["Modelo",p.modelCode],["EAN",p.ean],["Detalles",p.details]].filter(x=>x.at(1)).map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+  $("detailSpecs").innerHTML=[["Modelo",p.modelCode],["EAN",p.ean],["Detalles",p.details]].filter(x=>x).map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
   $("productDialog").showModal();
 }
 
@@ -167,9 +270,10 @@ async function start(){
     state.products=await res.json();
     renderFilters();
     renderCapacityFilters();
+    renderWatchFilters();
     renderProducts();
   }catch(e){
-    console.error(e);
+    console.error("Error cargando catálogo:",e);
   }
 }
 
@@ -180,11 +284,13 @@ $("searchInput").addEventListener("input",e=>{
 });
 $("clearButton").onclick=()=>{
   $("searchInput").value="";state.query="";state.family=null;state.capacity=null;
+  resetWatchFilters();
   $("clearButton").classList.add("hidden");
-  renderFilters();renderCapacityFilters();renderProducts();
+  renderFilters();renderCapacityFilters();renderWatchFilters();renderProducts();
 };
 $("closeDialog").onclick=()=>$("productDialog").close();
 start();
+
 let codeReader = null;
 let scannerControls = null;
 
@@ -209,17 +315,17 @@ function handleScannedCode(rawCode) {
 
   stopScanner();
 
-  // Poner el código leído en el buscador y filtrar
   $("searchInput").value = cleanCode;
   state.query = cleanCode;
   state.family = null;
   state.capacity = null;
+  resetWatchFilters();
   $("clearButton").classList.remove("hidden");
   renderFilters();
   renderCapacityFilters();
+  renderWatchFilters();
   renderProducts();
 
-  // Si coincide exactamente con un producto por EAN o referencia, abrir su ficha
   const digits = eanDigits(cleanCode);
   const exactMatch = state.products.find(p => 
     (digits && eanDigits(p.ean) === digits) || 
@@ -239,7 +345,6 @@ async function startScanner() {
   dialog.showModal();
 
   try {
-    // 1. Intentar usar la librería ZXing incluida en el HTML
     if (window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) {
       if (!codeReader) {
         codeReader = new window.ZXingBrowser.BrowserMultiFormatReader();
@@ -257,7 +362,6 @@ async function startScanner() {
       return;
     }
 
-    // 2. Alternativa: BarcodeDetector nativo (Chrome / Android / Edge)
     if ("BarcodeDetector" in window) {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" }
@@ -272,7 +376,7 @@ async function startScanner() {
         try {
           const barcodes = await detector.detect(video);
           if (barcodes.length > 0) {
-            handleScannedCode(barcodes[0].rawValue);
+            handleScannedCode(barcodes.rawValue);
             return;
           }
         } catch (e) {}
@@ -289,8 +393,6 @@ async function startScanner() {
   }
 }
 
-// Eventos de botones del escáner
 $("scanButton").onclick = startScanner;
 $("closeScanner").onclick = stopScanner;
 $("scannerDialog").addEventListener("close", stopScanner);
-
