@@ -2,8 +2,10 @@ const state={
   products:[],
   query:"",
   family:null,
+  autoFamily:false,
   subfamily:null,
   capacity:null,
+  ipadConn:null,
   watchConn:null,
   watchModel:null,
   watchSize:null
@@ -11,9 +13,30 @@ const state={
 const $=id=>document.getElementById(id);
 const CAPACITY_FAMILIES=["iphone","macbook","imac","ipad","mac mini","mac studio"];
 const supportsCapacity=family=>Boolean(family)&&CAPACITY_FAMILIES.some(f=>normalize(family).includes(f));
+const isIpadFamily=family=>Boolean(family)&&normalize(family).includes("ipad");
 const isWatchFamily=family=>Boolean(family)&&normalize(family).includes("watch");
 
+const hasActiveFilters=()=>Boolean(state.family||state.capacity||state.ipadConn||state.watchModel||state.watchConn||state.watchSize);
+
+const updateClearButton=()=>{
+  $("clearButton").classList.toggle("hidden",!(state.query||hasActiveFilters()));
+};
+
 const normalize=value=>String(value??"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("es-ES").replace(/[^a-z0-9]+/g," ").trim();
+const compact=value=>String(value??"").toLowerCase().replace(/[^a-z0-9]/g,"");
+const extractIpadConn=p=>{
+  const text=normalize(`${p.family} ${p.name} ${p.details}`);
+  if(
+    text.includes("cellular") ||
+    /\bcell?\b/.test(text) ||
+    text.includes("5g") ||
+    text.includes("4g") ||
+    text.includes("lte") ||
+    text.includes("datos")
+  ) return "Wi-Fi + Cellular";
+  return "Wi-Fi";
+};
+
 
 const extractWatchConn=p=>{
   const text=normalize(`${p.name} ${p.details}`);
@@ -38,13 +61,40 @@ const WATCH_SIZES_BY_MODEL={
 const extractWatchSize=p=>{
   const text=`${p.name} ${p.details}`;
   const match=text.match(/\b(40|41|42|44|45|46|49)\b/i);
-  return match?match[1]:null;
+  return match?match.at(0):null;
 };
 
 const resetWatchFilters=()=>{
   state.watchConn=null;
   state.watchModel=null;
   state.watchSize=null;
+};
+
+const detectFamilyFromQuery=query=>{
+  const words=normalize(query).split(" ").filter(Boolean);
+  if(!words.length)return null;
+
+  const families=[...new Set(state.products.map(p=>p.family).filter(Boolean))];
+  const firstWord=words.at(0);
+  const twoWords=words.slice(0,2).join(" ");
+
+  if(words.length>=2){
+    const matchTwo=families.find(f=>normalize(f)===twoWords || normalize(f).startsWith(twoWords+" "));
+    if(matchTwo)return matchTwo;
+  }
+
+  if(firstWord && firstWord.length>=3){
+    const exactFirst=families.find(f=>normalize(f)===firstWord);
+    if(exactFirst)return exactFirst;
+
+    const partialFirst=families.find(f=>{
+      const nf=normalize(f);
+      return nf.startsWith(firstWord+" ") || nf.split(" ").includes(firstWord);
+    });
+    if(partialFirst)return partialFirst;
+  }
+
+  return null;
 };
 
 const imageFor=p=>{
@@ -89,11 +139,11 @@ const barcodeSvg=value=>{
   if(digits.length!==13)return "";
   const left={L:["0001101","0011001","0010011","0111101","0100011","0110001","0101111","0111011","0110111","0001011"],G:["0100111","0110011","0011011","0100001","0011101","0111001","0000101","0010001","0001001","0010111"]};
   const right=["1110010","1100110","1101100","1000010","1011100","1001110","1010000","1000100","1001000","1110100"];
-  const parity=["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"][Number(digits.charAt(0))];
+  const parity=["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"].at(Number(digits.charAt(0)));
   let bits="101";
-  for(let i=1;i<=6;i++)bits+=left[parity.charAt(i-1)][Number(digits.charAt(i))];
+  for(let i=1;i<=6;i++)bits+=left[parity.charAt(i-1)].at(Number(digits.charAt(i)));
   bits+="01010";
-  for(let i=7;i<=12;i++)bits+=right[Number(digits.charAt(i))];
+  for(let i=7;i<=12;i++)bits+=right.at(Number(digits.charAt(i)));
   bits+="101";
   const quiet=11,module=3,height=82,width=(bits.length+quiet*2)*module;
   const bars=[...bits].map((bit,i)=>bit==="1"?`<rect x="${(quiet+i)*module}" y="0" width="${module}" height="${height}"/>`:"").join("");
@@ -101,8 +151,22 @@ const barcodeSvg=value=>{
 };
 
 const formatReference=value=>{const digits=String(value??"").replace(/\D/g,"");if(digits.length===11)return `${digits.slice(0,3)}.${digits.slice(3,6)}.${digits.slice(6)}`;return String(value??"")};
-const queryTokens=query=>normalize(query).split(" ").filter(Boolean);
-const searchable=p=>normalize([p.id,p.name,p.family,p.modelCode,p.status,p.ean,p.details].join(" "));
+
+const queryTokens=query=>{
+  const spaced=String(query??"").replace(/(\d+)\s*(gb|tb)\b/gi,"$1 $2");
+  return normalize(spaced).split(" ").filter(Boolean);
+};
+
+const textSearchable=p=>{
+  const raw=[p.name,p.family,p.modelCode,p.status,p.details].join(" ");
+  const spaced=raw.replace(/(\d+)\s*(gb|tb)\b/gi,"$1 $2");
+  return normalize(spaced);
+};
+
+const codeSearchable=p=>{
+  const raw=[p.id,p.ean,p.modelCode].join(" ");
+  return `${normalize(raw)} ${compact(raw)}`;
+};
 
 const extractCapacity=p=>{
   const text=`${p.name} ${p.details}`;
@@ -116,28 +180,76 @@ const extractCapacity=p=>{
 };
 function visibleProducts(){
   const tokens=queryTokens(state.query);
+  const compactQuery=compact(state.query);
+
   return state.products.filter(p=>{
     const matchesFamily=!state.family||p.family===state.family;
     const matchesCapacity=!state.capacity||extractCapacity(p)===state.capacity;
+    const matchesIpadConn=!state.ipadConn||extractIpadConn(p)===state.ipadConn;
     const matchesWatchConn=!state.watchConn||extractWatchConn(p)===state.watchConn;
     const matchesWatchModel=!state.watchModel||extractWatchModel(p)===state.watchModel;
     const matchesWatchSize=!state.watchSize||extractWatchSize(p)===state.watchSize;
-    return matchesFamily&&matchesCapacity&&matchesWatchConn&&matchesWatchModel&&matchesWatchSize&&tokens.every(t=>searchable(p).includes(t));
+
+    if(!matchesFamily||!matchesCapacity||!matchesIpadConn||!matchesWatchConn||!matchesWatchModel||!matchesWatchSize){
+      return false;
+    }
+
+    if(!tokens.length)return true;
+
+    const text=textSearchable(p);
+    const codes=codeSearchable(p);
+
+    if(compactQuery.length>=5 && codes.includes(compactQuery)){
+      return true;
+    }
+
+    return tokens.every(t=>{
+      if(/^\d{1,4}$/.test(t)){
+        const regex=new RegExp(`\\b${t}\\b`);
+        return regex.test(text);
+      }
+      return text.includes(t)||codes.includes(t);
+    });
   });
+}
+
+function clearOnlyFilters(){
+  state.family=null;
+  state.autoFamily=false;
+  state.capacity=null;
+  state.ipadConn=null;
+  resetWatchFilters();
+  renderFilters();
+  renderCapacityFilters();
+  renderIpadFilters();
+  renderWatchFilters();
+  renderProducts();
 }
 
 function renderFilters(){
   const families=[...new Set(state.products.map(p=>p.family))];
-  $("filters").innerHTML=families.map(f=>`<button class="filter ${f===state.family?"active":""}" data-family="${f}">${f}</button>`).join("");
-  $("filters").querySelectorAll("button").forEach(b=>b.onclick=()=>{
+  const clearBtnHtml=hasActiveFilters()
+    ? `<button id="clearFiltersChip" class="filter" type="button" aria-label="Limpiar filtros" title="Limpiar filtros">×</button>`
+    : "";
+
+  $("filters").innerHTML=families.map(f=>`<button class="filter ${f===state.family?"active":""}" data-family="${f}">${f}</button>`).join("")+clearBtnHtml;
+
+  $("filters").querySelectorAll("button[data-family]").forEach(b=>b.onclick=()=>{
     state.family=state.family===b.dataset.family?null:b.dataset.family;
+    state.autoFamily=false;
     if(!supportsCapacity(state.family))state.capacity=null;
+    if(!isIpadFamily(state.family))state.ipadConn=null;
     if(!isWatchFamily(state.family))resetWatchFilters();
     renderFilters();
     renderCapacityFilters();
+    renderIpadFilters();
     renderWatchFilters();
     renderProducts();
   });
+
+  const chip=$("clearFiltersChip");
+  if(chip)chip.onclick=clearOnlyFilters;
+  updateClearButton();
 }
 
 function renderCapacityFilters(){
@@ -158,7 +270,28 @@ function renderCapacityFilters(){
   el.innerHTML=caps.map(c=>`<button class="filter ${c===state.capacity?"active":""}" data-cap="${c}">${c}</button>`).join("");
   el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
     state.capacity=state.capacity===b.dataset.cap?null:b.dataset.cap;
-    renderCapacityFilters();renderProducts();
+    renderCapacityFilters();
+    renderProducts();
+    updateClearButton();
+  });
+}
+
+function renderIpadFilters(){
+  const el=$("ipadConnFilters");
+  if(!el)return;
+  const show=isIpadFamily(state.family);
+  el.classList.toggle("hidden",!show);
+  if(!show){
+    el.innerHTML="";
+    return;
+  }
+  const conns=["Wi-Fi","Wi-Fi + Cellular"];
+  el.innerHTML=conns.map(c=>`<button class="filter ${c===state.ipadConn?"active":""}" data-ipad-conn="${c}">${c}</button>`).join("");
+  el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    state.ipadConn=state.ipadConn===b.dataset.ipadConn?null:b.dataset.ipadConn;
+    renderIpadFilters();
+    renderProducts();
+    updateClearButton();
   });
 }
 
@@ -194,6 +327,7 @@ function renderWatchFilters(){
 
     renderWatchFilters();
     renderProducts();
+    updateClearButton();
   });
 
   const showSubfilters=Boolean(state.watchModel);
@@ -212,6 +346,7 @@ function renderWatchFilters(){
       state.watchConn=state.watchConn===b.dataset.conn?null:b.dataset.conn;
       renderWatchFilters();
       renderProducts();
+      updateClearButton();
     });
   }
 
@@ -226,6 +361,7 @@ function renderWatchFilters(){
       state.watchSize=state.watchSize===b.dataset.size?null:b.dataset.size;
       renderWatchFilters();
       renderProducts();
+      updateClearButton();
     });
   }
 }
@@ -270,6 +406,7 @@ async function start(){
     state.products=await res.json();
     renderFilters();
     renderCapacityFilters();
+    renderIpadFilters();
     renderWatchFilters();
     renderProducts();
   }catch(e){
@@ -279,14 +416,39 @@ async function start(){
 
 $("searchInput").addEventListener("input",e=>{
   state.query=e.target.value;
-  $("clearButton").classList.toggle("hidden",!state.query);
+
+  const detected=detectFamilyFromQuery(state.query);
+  if(detected && detected!==state.family){
+    state.family=detected;
+    state.autoFamily=true;
+    if(!supportsCapacity(state.family))state.capacity=null;
+    if(!isIpadFamily(state.family))state.ipadConn=null;
+    if(!isWatchFamily(state.family))resetWatchFilters();
+    renderFilters();
+    renderCapacityFilters();
+    renderIpadFilters();
+    renderWatchFilters();
+  }else if(!detected && state.autoFamily){
+    state.family=null;
+    state.autoFamily=false;
+    state.capacity=null;
+    state.ipadConn=null;
+    resetWatchFilters();
+    renderFilters();
+    renderCapacityFilters();
+    renderIpadFilters();
+    renderWatchFilters();
+  }
+
+  updateClearButton();
   renderProducts();
 });
+
 $("clearButton").onclick=()=>{
-  $("searchInput").value="";state.query="";state.family=null;state.capacity=null;
+  $("searchInput").value="";state.query="";state.family=null;state.autoFamily=false;state.capacity=null;state.ipadConn=null;
   resetWatchFilters();
-  $("clearButton").classList.add("hidden");
-  renderFilters();renderCapacityFilters();renderWatchFilters();renderProducts();
+  renderFilters();renderCapacityFilters();renderIpadFilters();renderWatchFilters();renderProducts();
+  updateClearButton();
 };
 $("closeDialog").onclick=()=>$("productDialog").close();
 start();
@@ -318,13 +480,16 @@ function handleScannedCode(rawCode) {
   $("searchInput").value = cleanCode;
   state.query = cleanCode;
   state.family = null;
+  state.autoFamily = false;
   state.capacity = null;
+  state.ipadConn = null;
   resetWatchFilters();
-  $("clearButton").classList.remove("hidden");
   renderFilters();
   renderCapacityFilters();
+  renderIpadFilters();
   renderWatchFilters();
   renderProducts();
+  updateClearButton();
 
   const digits = eanDigits(cleanCode);
   const exactMatch = state.products.find(p => 
@@ -376,7 +541,7 @@ async function startScanner() {
         try {
           const barcodes = await detector.detect(video);
           if (barcodes.length > 0) {
-            handleScannedCode(barcodes.rawValue);
+            handleScannedCode(barcodes.at(0).rawValue);
             return;
           }
         } catch (e) {}
