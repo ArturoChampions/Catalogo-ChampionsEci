@@ -5,6 +5,7 @@ const state={
   autoFamily:false,
   subfamily:null,
   capacity:null,
+  screenSize:null,
   ipadConn:null,
   watchConn:null,
   watchModel:null,
@@ -13,10 +14,11 @@ const state={
 const $=id=>document.getElementById(id);
 const CAPACITY_FAMILIES=["iphone","macbook","imac","ipad","mac mini","mac studio"];
 const supportsCapacity=family=>Boolean(family)&&CAPACITY_FAMILIES.some(f=>normalize(family).includes(f));
+const isScreenSizeFamily=family=>Boolean(family)&&(normalize(family).includes("ipad")||normalize(family).includes("macbook"));
 const isIpadFamily=family=>Boolean(family)&&normalize(family).includes("ipad");
 const isWatchFamily=family=>Boolean(family)&&normalize(family).includes("watch");
 
-const hasActiveFilters=()=>Boolean(state.family||state.capacity||state.ipadConn||state.watchModel||state.watchConn||state.watchSize);
+const hasActiveFilters=()=>Boolean(state.family||state.capacity||state.screenSize||state.ipadConn||state.watchModel||state.watchConn||state.watchSize);
 
 const updateClearButton=()=>{
   $("clearButton").classList.toggle("hidden",!(state.query||hasActiveFilters()));
@@ -24,6 +26,19 @@ const updateClearButton=()=>{
 
 const normalize=value=>String(value??"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLocaleLowerCase("es-ES").replace(/[^a-z0-9]+/g," ").trim();
 const compact=value=>String(value??"").toLowerCase().replace(/[^a-z0-9]/g,"");
+
+const extractScreenSize=p=>{
+  const text=`${p.family} ${p.name} ${p.details}`;
+  const explicitMatch=text.match(/\b(11|12|13|14|15|16)(?:[.,]\d+)?\s*(?:["″”]|''|pulgadas|in\b)/i);
+  if(explicitMatch)return explicitMatch.at(1);
+
+  const modelMatch=text.match(/\b(?:macbook|ipad)\s+(?:air|pro|neo|mini)?\s*(11|12|13|14|15|16)\b/i);
+  if(modelMatch)return modelMatch.at(1);
+
+  return null;
+};
+
+
 const extractIpadConn=p=>{
   const text=normalize(`${p.family} ${p.name} ${p.details}`);
   if(
@@ -36,7 +51,6 @@ const extractIpadConn=p=>{
   ) return "Wi-Fi + Cellular";
   return "Wi-Fi";
 };
-
 
 const extractWatchConn=p=>{
   const text=normalize(`${p.name} ${p.details}`);
@@ -185,12 +199,13 @@ function visibleProducts(){
   return state.products.filter(p=>{
     const matchesFamily=!state.family||p.family===state.family;
     const matchesCapacity=!state.capacity||extractCapacity(p)===state.capacity;
+    const matchesScreenSize=!state.screenSize||extractScreenSize(p)===state.screenSize;
     const matchesIpadConn=!state.ipadConn||extractIpadConn(p)===state.ipadConn;
     const matchesWatchConn=!state.watchConn||extractWatchConn(p)===state.watchConn;
     const matchesWatchModel=!state.watchModel||extractWatchModel(p)===state.watchModel;
     const matchesWatchSize=!state.watchSize||extractWatchSize(p)===state.watchSize;
 
-    if(!matchesFamily||!matchesCapacity||!matchesIpadConn||!matchesWatchConn||!matchesWatchModel||!matchesWatchSize){
+    if(!matchesFamily||!matchesCapacity||!matchesScreenSize||!matchesIpadConn||!matchesWatchConn||!matchesWatchModel||!matchesWatchSize){
       return false;
     }
 
@@ -217,10 +232,12 @@ function clearOnlyFilters(){
   state.family=null;
   state.autoFamily=false;
   state.capacity=null;
+  state.screenSize=null;
   state.ipadConn=null;
   resetWatchFilters();
   renderFilters();
   renderCapacityFilters();
+  renderScreenSizeFilters();
   renderIpadFilters();
   renderWatchFilters();
   renderProducts();
@@ -238,10 +255,12 @@ function renderFilters(){
     state.family=state.family===b.dataset.family?null:b.dataset.family;
     state.autoFamily=false;
     if(!supportsCapacity(state.family))state.capacity=null;
+    if(!isScreenSizeFamily(state.family))state.screenSize=null;
     if(!isIpadFamily(state.family))state.ipadConn=null;
     if(!isWatchFamily(state.family))resetWatchFilters();
     renderFilters();
     renderCapacityFilters();
+    renderScreenSizeFilters();
     renderIpadFilters();
     renderWatchFilters();
     renderProducts();
@@ -271,6 +290,32 @@ function renderCapacityFilters(){
   el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
     state.capacity=state.capacity===b.dataset.cap?null:b.dataset.cap;
     renderCapacityFilters();
+    renderProducts();
+    updateClearButton();
+  });
+}
+
+function renderScreenSizeFilters(){
+  const el=$("screenSizeFilters");
+  if(!el)return;
+  const show=isScreenSizeFamily(state.family);
+  el.classList.toggle("hidden",!show);
+  if(!show){
+    el.innerHTML="";
+    return;
+  }
+  const familyProducts=state.products.filter(p=>p.family===state.family);
+  const sizes=[...new Set(familyProducts.map(extractScreenSize).filter(Boolean))].sort();
+  if(sizes.length===0){
+    el.classList.add("hidden");
+    el.innerHTML="";
+    return;
+  }
+  el.innerHTML=sizes.map(s=>`<button class="filter ${s===state.screenSize?"active":""}" data-screen="${s}">${s}"</button>`).join("");
+
+  el.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+    state.screenSize=state.screenSize===b.dataset.screen?null:b.dataset.screen;
+    renderScreenSizeFilters();
     renderProducts();
     updateClearButton();
   });
@@ -406,6 +451,7 @@ async function start(){
     state.products=await res.json();
     renderFilters();
     renderCapacityFilters();
+    renderScreenSizeFilters();
     renderIpadFilters();
     renderWatchFilters();
     renderProducts();
@@ -422,20 +468,24 @@ $("searchInput").addEventListener("input",e=>{
     state.family=detected;
     state.autoFamily=true;
     if(!supportsCapacity(state.family))state.capacity=null;
+    if(!isScreenSizeFamily(state.family))state.screenSize=null;
     if(!isIpadFamily(state.family))state.ipadConn=null;
     if(!isWatchFamily(state.family))resetWatchFilters();
     renderFilters();
     renderCapacityFilters();
+    renderScreenSizeFilters();
     renderIpadFilters();
     renderWatchFilters();
   }else if(!detected && state.autoFamily){
     state.family=null;
     state.autoFamily=false;
     state.capacity=null;
+    state.screenSize=null;
     state.ipadConn=null;
     resetWatchFilters();
     renderFilters();
     renderCapacityFilters();
+    renderScreenSizeFilters();
     renderIpadFilters();
     renderWatchFilters();
   }
@@ -445,9 +495,9 @@ $("searchInput").addEventListener("input",e=>{
 });
 
 $("clearButton").onclick=()=>{
-  $("searchInput").value="";state.query="";state.family=null;state.autoFamily=false;state.capacity=null;state.ipadConn=null;
+  $("searchInput").value="";state.query="";state.family=null;state.autoFamily=false;state.capacity=null;state.screenSize=null;state.ipadConn=null;
   resetWatchFilters();
-  renderFilters();renderCapacityFilters();renderIpadFilters();renderWatchFilters();renderProducts();
+  renderFilters();renderCapacityFilters();renderScreenSizeFilters();renderIpadFilters();renderWatchFilters();renderProducts();
   updateClearButton();
 };
 $("closeDialog").onclick=()=>$("productDialog").close();
@@ -482,10 +532,12 @@ function handleScannedCode(rawCode) {
   state.family = null;
   state.autoFamily = false;
   state.capacity = null;
+  state.screenSize = null;
   state.ipadConn = null;
   resetWatchFilters();
   renderFilters();
   renderCapacityFilters();
+  renderScreenSizeFilters();
   renderIpadFilters();
   renderWatchFilters();
   renderProducts();
